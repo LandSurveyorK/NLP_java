@@ -1,0 +1,24 @@
+<project name="assign_rerank" default="build" basedir=".">
+  <property name="name" location="assign_rerank"/>
+  <property environment="env"/>
+
+  <target name="build">
+    <delete dir="build_assign_rerank"/>
+    <mkdir dir="build_assign_rerank"/>
+    <copy todir="build_assign_rerank">
+    	<fileset dir=".">
+    		<include name="src/**"/>
+    	</fileset>
+    </copy>
+    <javac srcdir="build_assign_rerank/src" debug="true" classpath="${name}.jar">
+      <compilerarg value="-Xlint:deprecation"/>
+      <include name="**/*.java"/>
+    </javac>
+    <jar destfile="${name}-submit.jar" basedir="build_assign_rerank/src">
+	</jar>
+	<delete dir="build_assign_rerank"/>
+	
+  </target>
+</project>
+                                 
+                                 
