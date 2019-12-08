@@ -1,0 +1,379 @@
+/*package edu.berkeley.nlp.assignments.parsing.student;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Collections;
+import edu.berkeley.nlp.assignments.parsing.Grammar;
+import edu.berkeley.nlp.assignments.parsing.BinaryRule;
+import edu.berkeley.nlp.assignments.parsing.UnaryRule;
+import edu.berkeley.nlp.assignments.parsing.SimpleLexicon;
+import edu.berkeley.nlp.assignments.parsing.UnaryClosure;
+import edu.berkeley.nlp.assignments.parsing.Parser;
+import edu.berkeley.nlp.ling.Tree;
+import edu.berkeley.nlp.math.SloppyMath;
+import edu.berkeley.nlp.util.Indexer;
+import edu.berkeley.nlp.assignments.parsing.student.annotateTrees;
+
+public class CoarseToFineParser implements Parser{
+	Grammar coarseGrammar, fineGrammar;
+	short num_grammar;
+	Indexer<String> coarseGrammarIndexer, fineGrammarIndexer;
+	SimpleLexicon coarseLexicon, fineLexicon;
+	UnaryClosure coarseUC, fineUC;
+	// use for an alternative way by using two charts
+
+	double[][][] coarseUnaryBeta, coarseBinaryBeta;
+	double[][][] coarseUnaryAlpha, coarseBinaryAlpha;
+	
+	double[][][]  fineUnaryChart; //score
+	double[][][] fineBinaryChart;
+	int[][][] fineUnaryBack, fineBinaryMid, fineBinaryLeft, fineBinaryRight;
+	int[] map;
+	
+	static double threshold = -40;
+	
+	private void createFine2CoarseMap() {
+		
+		map = new int[fineGrammarIndexer.size()];
+		for (int A = 0; A < fineGrammarIndexer.size(); A++) {
+			String fine_string = fineGrammarIndexer.get(A);
+			int index = fine_string.indexOf('^');
+			if(index != -1) {
+				String coarse_string = fine_string.substring(0, index);
+				map[A] = coarseGrammarIndexer.addAndGetIndex(coarse_string);
+			}
+			else {
+				String coarse_string = fine_string;
+				map[A] = coarseGrammarIndexer.addAndGetIndex(coarse_string);
+			}
+		}
+		
+	}
+	
+	public CoarseToFineParser(List<Tree<String>> trainTrees) {
+		System.out.println("train parser size: " + trainTrees.size());
+		
+		System.out.println("Annotating / Binarizing training tress ...");
+		int size = trainTrees.size();
+		ArrayList<Tree<String>> coarseAnnotatedTrainTrees = new ArrayList<Tree<String>>();
+		ArrayList<Tree<String>> fineAnnotatedTrainTrees = new ArrayList<Tree<String>>();
+		for(int i = 0; i < size; i++) {
+			coarseAnnotatedTrainTrees.add(coarseAnnotateTrees.annotate(trainTrees.get(i)));	
+			fineAnnotatedTrainTrees.add(annotateTrees.annotate(trainTrees.get(i)));
+		}
+
+		System.out.println("done.");
+		
+		//System.out.println("Building grammer ... ");
+		coarseGrammar = Grammar.generativeGrammarFromTrees(coarseAnnotatedTrainTrees);
+		coarseGrammarIndexer = coarseGrammar.getLabelIndexer();
+	    //short coarse_num_grammar = (short) coarseGrammarIndexer.size();
+		fineGrammar = Grammar.generativeGrammarFromTrees(fineAnnotatedTrainTrees);
+		fineGrammarIndexer = fineGrammar.getLabelIndexer();
+	    //short fine_num_grammar = (short) fineGrammarIndexer.size();
+		
+		//System.out.println("coarse done. (" + coarse_num_grammar + " states)");
+		//System.out.println("fine done. (" + fine_num_grammar + " states)");
+		
+		
+		//System.out.println("Getting lexicon ... ");
+		coarseLexicon = new SimpleLexicon(coarseAnnotatedTrainTrees);
+		coarseUC = new UnaryClosure(coarseGrammarIndexer, coarseGrammar.getUnaryRules());
+		fineLexicon = new SimpleLexicon(fineAnnotatedTrainTrees);
+		fineUC = new UnaryClosure(fineGrammarIndexer, fineGrammar.getUnaryRules());
+		System.out.println("done");
+		
+		createFine2CoarseMap();
+		System.out.println(coarseGrammarIndexer.get(0) == "ROOT");
+		System.out.println(map[0]);
+			
+	}
+	
+	public Tree<String> getBestParse(List<String> sentence){
+		
+		short n = (short)sentence.size();
+		short m = (short)coarseGrammarIndexer.size();
+		short M = (short)fineGrammarIndexer.size();
+		
+		coarseUnaryBeta = new double[n][n+1][m];
+		coarseBinaryBeta = new double[n][n+1][m];
+		coarseUnaryAlpha = new double[n][n+1][m];
+		coarseBinaryAlpha = new double[n][n+1][m];
+
+		// Initialize Chart, Term, back
+		for(int i = 0; i < n; i++) {
+			for(int j = i+1; j < n+1; j++){ 
+				for(int A = 0; A < m; A++){
+					coarseUnaryBeta[i][j][A] = Double.NEGATIVE_INFINITY;
+					coarseBinaryBeta[i][j][A] = Double.NEGATIVE_INFINITY; //N^j(w_k)
+					coarseUnaryAlpha[i][j][A] = Double.NEGATIVE_INFINITY;
+					coarseBinaryAlpha[i][j][A] = Double.NEGATIVE_INFINITY;			
+				}
+			}
+		}
+		// fill out diagonal cells
+		for (int i = 0; i < n; i++) {
+			for (String A_string: coarseLexicon.getAllTags()) {
+				double score = coarseLexicon.scoreTagging(sentence.get(i), A_string);
+				if (score != Double.NaN && score != Double.NEGATIVE_INFINITY) {
+					int A = coarseGrammarIndexer.addAndGetIndex(A_string);
+					coarseBinaryBeta[i][i+1][A] = score; // N_A W_ii
+				}
+			}
+			// handle unary rule
+			for(int A = 0; A < m; A++) {
+				if(coarseBinaryBeta[i][i+1][A] != Double.NEGATIVE_INFINITY) {
+				    for (UnaryRule candidate: coarseUC.getClosedUnaryRulesByChild(A)) {
+					    int B = candidate.getParent();
+					    double prob = candidate.getScore() + coarseBinaryBeta[i][i+1][A];	
+					    coarseUnaryBeta[i][i+1][B] =  prob;
+                    }// update available terms
+				}
+			}
+		}
+	    // fill out off-diagonal cells
+	    for (int max = 2; max <= n; max++) {
+		    for (int min = max - 2; min >= 0; min--) {
+			    for (int mid = min + 1; mid <= max - 1; mid++) {
+			    	for (int B = 0; B < m; B++) {
+			    		if(coarseUnaryBeta[min][mid][B] != Double.NEGATIVE_INFINITY) {
+				            for (BinaryRule candidate: coarseGrammar.getBinaryRulesByLeftChild(B)) {
+				 		        int C = candidate.getRightChild();
+						        int A = candidate.getParent();
+						        if (coarseUnaryBeta[mid][max][C] != Double.NEGATIVE_INFINITY) {
+						            double prob = coarseUnaryBeta[min][mid][B] + 
+							 	    coarseUnaryBeta[mid][max][C] + candidate.getScore();
+						            coarseBinaryBeta[min][max][A] = SloppyMath.logAdd(
+						            		coarseBinaryBeta[min][max][A], prob);		
+					            }
+				            }
+		                }
+		            }
+			    }
+	            //handle unary
+			    for(int A = 0; A < m; A++) {
+			    	if(coarseBinaryBeta[min][max][A] != Double.NEGATIVE_INFINITY) {
+			    		for(UnaryRule candidate: coarseUC.getClosedUnaryRulesByChild(A)) {
+					        double prob = candidate.getScore() + coarseBinaryBeta[min][max][A];
+					        int B = candidate.getParent();
+                            coarseUnaryBeta[min][max][B] = SloppyMath.logAdd(
+                            		coarseUnaryBeta[min][max][B], prob);
+		                }
+	                }
+		        }
+	        }
+         }
+	    
+	    
+	    // calculate beta
+	    coarseUnaryAlpha[0][n][0] = 0;
+
+	    for(int min = 0; min < n; min++) {
+	    	for(int max = n; max > 0; max--) {
+	    		// switch order, get binary from unary.
+	    		for(int A = 0; A < m; A++) {
+		    	       if(coarseUnaryAlpha[min][max][A] != Double.NEGATIVE_INFINITY) {
+		    		       for(UnaryRule candidate: coarseUC.getClosedUnaryRulesByParent(A)) {
+		    			       int B = candidate.getChild();
+		    			       coarseBinaryAlpha[min][max][B] = SloppyMath.logAdd(
+		    					   coarseBinaryAlpha[min][max][B], candidate.getScore() + coarseUnaryAlpha[min][max][A] );
+		    			   
+		    		       }
+		    	       }
+		           }
+	    		// finished alpha[min][max]
+	    		for(int mid = min + 1; mid < max; mid++) {
+	    			for(int A = 0; A < m; A++) {
+	    				if (coarseBinaryAlpha[min][max][A] != Double.NEGATIVE_INFINITY) {
+	    					for(BinaryRule candidate : coarseGrammar.getBinaryRulesByParent(A)) {
+	    						int B = candidate.getLeftChild();
+	    						int C = candidate.getRightChild();
+	    						if(coarseUnaryBeta[min][mid][B] != Double.NEGATIVE_INFINITY &&
+	    								coarseUnaryBeta[mid][max][C] != Double.NEGATIVE_INFINITY) {
+	    							double prob_B = candidate.getScore() + coarseBinaryAlpha[min][max][A] +
+	    									coarseUnaryBeta[mid][max][C];
+	    							coarseUnaryAlpha[min][mid][B] = SloppyMath.logAdd(
+	    									coarseUnaryAlpha[min][mid][B], prob_B);
+
+	    							double prob_C = candidate.getScore() + coarseBinaryAlpha[min][max][A] +
+	    									coarseUnaryBeta[min][mid][B];
+	    							coarseUnaryAlpha[mid][max][C] = SloppyMath.logAdd(
+	    									coarseUnaryAlpha[mid][max][C], prob_C);
+	    									
+	    						}
+	    					}
+	    					
+	    				}
+	    			}
+	    	   }
+	    		
+	    	}
+	    }
+	    // CKY fine parsing
+	    fineUnaryChart = new double[n][n+1][M]; //score
+		fineBinaryChart = new double[n][n+1][M];
+		fineUnaryBack = new int[n][n+1][M];			
+		fineBinaryMid = new int[n][n+1][M];
+		fineBinaryLeft = new int[n][n+1][M];
+		fineBinaryRight = new int[n][n+1][M];
+			
+		// Initialize Chart, Term, back
+		for(int i = 0; i < n; i++) {
+			for(int j = i+1; j < n+1; j++){ 					
+				for(int A = 0; A < M; A++){
+						fineUnaryChart[i][j][A] = Double.NEGATIVE_INFINITY;
+						fineBinaryChart[i][j][A] = Double.NEGATIVE_INFINITY;
+					}
+				}
+			}
+			// fill out diagonal cells
+			for (int i = 0; i < n; i++) {
+				for (String A_string: fineLexicon.getAllTags()) {
+					double score = fineLexicon.scoreTagging(sentence.get(i), A_string);
+					if (score != Double.NaN && score != Double.NEGATIVE_INFINITY) {
+						int A = fineGrammarIndexer.addAndGetIndex(A_string);
+						fineBinaryChart[i][i+1][A] = score;
+					}
+				}
+				// handle unary rule
+				for(int A = 0; A < M; A++) {
+					if(fineBinaryChart[i][i+1][A] != Double.NEGATIVE_INFINITY) {
+					    for (UnaryRule candidate: fineUC.getClosedUnaryRulesByChild(A)) {
+						    int B = candidate.getParent();
+						    int coarse_B = map[B];
+						    double coarseScore = - coarseUnaryBeta[0][n][0] +
+						    		coarseUnaryBeta[i][i+1][coarse_B] + 
+						    		coarseUnaryAlpha[i][i+1][coarse_B];
+						     if(coarseScore < -threshold) {
+						   
+						    	fineUnaryChart[i][i+1][B] = Double.NEGATIVE_INFINITY;
+						    	continue;
+						    }
+						    double prob = candidate.getScore() + fineBinaryChart[i][i+1][A];	
+						    if (prob > fineUnaryChart[i][i+1][B]) { 
+	                       	    fineUnaryChart[i][i+1][B] = prob;
+	                       	    fineUnaryBack[i][i+1][B] = A;
+						    }
+	          
+	                    }// update available terms
+					}
+				}
+			}
+		    // fill out off-diagonal cells
+		    for (int max = 2; max <= n; max++) {
+			    for (int min = max - 2; min >= 0; min--) {
+				    for (int mid = min + 1; mid <= max - 1; mid++) {
+				    	for (int B = 0; B < M; B++) {
+				    		if(fineUnaryChart[min][mid][B] != Double.NEGATIVE_INFINITY) {
+					            for (BinaryRule candidate: fineGrammar.getBinaryRulesByLeftChild(B)) {
+					 		        int C = candidate.getRightChild();
+							        int A = candidate.getParent();
+							        
+								    int coarse_A = map[A];
+	
+								    double coarsEScore = -coarseUnaryBeta[0][n][0] +
+								    		coarseBinaryBeta[min][max][coarse_A] + 
+								    		coarseBinaryAlpha[min][max][coarse_A];
+								    if(coarsEScore < threshold) {
+								    	fineBinaryChart[min][max][A] = Double.NEGATIVE_INFINITY;
+								    	continue;
+								    }
+							        if (fineUnaryChart[mid][max][C] != Double.NEGATIVE_INFINITY) {
+							            double prob = fineUnaryChart[min][mid][B] + 
+								 	    fineUnaryChart[mid][max][C] + candidate.getScore();							        
+								        if (prob > fineBinaryChart[min][max][A]) {
+								       	    fineBinaryChart[min][max][A] = prob;
+								       	    fineBinaryMid[min][max][A] = mid;
+								       	    fineBinaryLeft[min][max][A] = B;
+								       	    fineBinaryRight[min][max][A] = C;
+							            }
+						            }
+					            }
+			                }
+			            }
+				    }
+		            //handle unary
+				    for(int A = 0; A < M; A++) {
+				    	if(fineBinaryChart[min][max][A] != Double.NEGATIVE_INFINITY) {
+				    		for(UnaryRule candidate: fineUC.getClosedUnaryRulesByChild(A)) {
+						        int B = candidate.getParent();
+						        
+							    int coarse_B = map[B];
+
+							    double coarseScore = -coarseUnaryBeta[0][n-1][0] +
+							    		coarseUnaryBeta[min][max][coarse_B] + 
+							    		coarseUnaryAlpha[min][max][coarse_B];
+							    if(coarseScore < threshold) {
+							    	fineUnaryChart[min][max][B] = Double.NEGATIVE_INFINITY;
+							    	continue;
+							    }
+							    double prob = candidate.getScore() + fineBinaryChart[min][max][A];
+	                            if (prob > fineUnaryChart[min][max][B]) { // existed B
+	                    	        fineUnaryChart[min][max][B] = prob;
+							        fineUnaryBack[min][max][B] = A;
+						        }   
+			                }
+		                }
+			        }
+		        }
+	 }
+	if (fineUnaryChart[0][n][0] == Double.NEGATIVE_INFINITY) {
+			   return new Tree<String>("ROOT", Collections.singletonList(new Tree<String>("JUNK")));
+		   }
+		   Tree<String> annotatedBestParse = buildUnary(sentence, 0, n, "ROOT");
+		   return annotateTrees.unAnnotateTree(annotatedBestParse);
+		
+	}
+
+	// handle unary
+	private Tree<String> buildBinary(List<String> sentence, int min, int max,
+			String label){
+		
+		int A = fineGrammarIndexer.addAndGetIndex(label);
+		
+		if (min == max - 1) {
+			return new Tree<String>(label, Collections.singletonList(
+					new Tree<String>(sentence.get(min))));
+	    }
+		String leftTreeLabel = fineGrammarIndexer.get(fineBinaryLeft[min][max][A]);
+		String rightTreeLabel = fineGrammarIndexer.get(fineBinaryRight[min][max][A]);
+	    Tree<String> leftTree = buildUnary(sentence, min, fineBinaryMid[min][max][A],
+	    		leftTreeLabel);
+	    Tree<String> rightTree = buildUnary(sentence, fineBinaryMid[min][max][A], max,
+	    		rightTreeLabel);		    
+	    List<Tree<String>> children = new ArrayList<Tree<String>>();
+		children.add(leftTree);
+		children.add(rightTree);
+		return new Tree<String>(label,children);
+	}
+	// handle binary and preterminal 
+	private Tree<String> buildUnary(List<String> sentence, int min, int max,
+			String label){
+		
+		int A = fineGrammarIndexer.addAndGetIndex(label);
+		int B = fineUnaryBack[min][max][A];
+        UnaryRule unaryrule = new UnaryRule(A,B); 
+	    String tailTreeLabel = fineGrammarIndexer.get(B);
+	    Tree<String> tailTree = buildBinary(sentence, min, max,
+				tailTreeLabel);
+	    if(A == B) {
+	    	return new Tree<String>(label, tailTree.getChildren());
+	    }
+	    List<Integer> path = fineUC.getPath(unaryrule);			
+	    Tree<String> Tree = unaryExtend(path.subList(0, path.size()-1), 
+	    		Collections.singletonList(tailTree));
+	    return Tree;	
+	
+	}
+	private Tree<String> unaryExtend(List<Integer> path, List<Tree<String>> tailTree){
+		
+		List<Tree<String>> trees = tailTree;
+		for(int i = path.size() - 1; i >= 0; i--) {
+			trees = Collections.singletonList(
+					new Tree<String>(fineGrammarIndexer.get(path.get(i)), trees));	
+		}
+		return trees.get(0);
+	}
+
+	
+}
+*/
